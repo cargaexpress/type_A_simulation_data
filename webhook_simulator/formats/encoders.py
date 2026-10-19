@@ -1,18 +1,19 @@
-"""Formatos de mensaje: cada transportadora serializa el mismo evento de forma distinta (RIWI-83)."""
+"""Encoders: each carrier serializes the same event in its own way (RIWI-83)."""
 
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from urllib.parse import urlencode
-from xml.etree import ElementTree as ET
+from xml.etree import ElementTree as ET  # building XML is safe; only PARSING needs defusedxml
 
-from webhook_simulator.generator import ShipmentEvent
+from webhook_simulator.domain.catalog import PayloadFormat
+from webhook_simulator.domain.models import ShipmentEvent
 
-BOGOTA = timezone(timedelta(hours=-5))
+BOGOTA = timezone(timedelta(hours=-5))  # Gamma sends local Colombian time
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EncodedRequest:
     body: bytes
     content_type: str
@@ -23,7 +24,7 @@ def _json(payload: dict) -> bytes:
 
 
 def json_flat(event: ShipmentEvent) -> EncodedRequest:
-    """JSON plano en snake_case, hora ISO-8601 en UTC."""
+    """Flat JSON, snake_case, ISO-8601 time in UTC."""
     return EncodedRequest(
         _json(
             {
@@ -39,7 +40,7 @@ def json_flat(event: ShipmentEvent) -> EncodedRequest:
 
 
 def json_nested(event: ShipmentEvent) -> EncodedRequest:
-    """JSON anidado en camelCase, código de estado numérico y hora en milisegundos desde 1970."""
+    """Nested JSON, camelCase, numeric status code, time as milliseconds since 1970."""
     return EncodedRequest(
         _json(
             {
@@ -57,7 +58,7 @@ def json_nested(event: ShipmentEvent) -> EncodedRequest:
 
 
 def json_es(event: ShipmentEvent) -> EncodedRequest:
-    """JSON en español, estado en texto y hora local de Colombia (-05:00)."""
+    """Spanish JSON, text status, local Colombian time (-05:00)."""
     return EncodedRequest(
         _json(
             {
@@ -73,7 +74,7 @@ def json_es(event: ShipmentEvent) -> EncodedRequest:
 
 
 def xml(event: ShipmentEvent) -> EncodedRequest:
-    """XML con códigos cortos de estado y hora compacta en UTC."""
+    """XML with short status codes and compact UTC time."""
     root = ET.Element("ShipmentEvent", {"id": event.event_id})
     ET.SubElement(root, "Tracking").text = event.tracking_number
     ET.SubElement(root, "Status").text = event.status.raw
@@ -85,7 +86,7 @@ def xml(event: ShipmentEvent) -> EncodedRequest:
 
 
 def form(event: ShipmentEvent) -> EncodedRequest:
-    """Formulario clásico (x-www-form-urlencoded), estado descriptivo y hora en segundos desde 1970."""
+    """Classic form post (x-www-form-urlencoded), descriptive status, time in epoch seconds."""
     return EncodedRequest(
         urlencode(
             {
@@ -100,14 +101,10 @@ def form(event: ShipmentEvent) -> EncodedRequest:
     )
 
 
-FORMATS: dict[str, Callable[[ShipmentEvent], EncodedRequest]] = {
-    "json_flat": json_flat,
-    "json_nested": json_nested,
-    "json_es": json_es,
-    "xml": xml,
-    "form": form,
+ENCODERS: dict[PayloadFormat, Callable[[ShipmentEvent], EncodedRequest]] = {
+    PayloadFormat.JSON_FLAT: json_flat,
+    PayloadFormat.JSON_NESTED: json_nested,
+    PayloadFormat.JSON_ES: json_es,
+    PayloadFormat.XML: xml,
+    PayloadFormat.FORM: form,
 }
-
-
-def encode(payload_format: str, event: ShipmentEvent) -> EncodedRequest:
-    return FORMATS[payload_format](event)

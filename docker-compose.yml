@@ -1,55 +1,75 @@
-# Simulador de webhooks (HU-17 / RIWI-86). Independiente del docker-compose.yml del backend.
+# Webhook simulator + receiver API (HU-17 / F3). One command starts the whole thing:
 #
-#   docker compose up --build                 simulador + receptor de pruebas (sink)
-#   docker compose run --rm tests             pruebas automáticas
-#   docker compose run --rm simulator --dry-run --max-events 10   ver mensajes sin enviar
+#   docker compose up --build            receiver API + simulator, running continuously
+#   docker compose logs -f simulator     watch what is being sent
+#   curl localhost:9000/stats            watch what arrived
+#   docker compose run --rm tests        lint + automated tests
+#   docker compose down                  stop (events are kept in the "receiver-data" volume)
+#   docker compose down -v               stop AND wipe all stored events
 #
-# Para apuntar a un backend que corre en tu máquina (puerto 8000), crea un .env con:
-#   SIM_TARGET_URL_TEMPLATE=http://host.docker.internal:8000/webhooks/{carrier}
+# How to get the data out into another project: docs/EXTRACTING_DATA.md
+# Everything can be tweaked from a ".env" file or your shell, see .env.example.
 
 name: webhook-simulator
 
 services:
-  sink:
+  # --- Our own API that receives the carriers' webhooks and stores them in SQLite ---
+  receiver:
     build:
       context: .
       target: runtime
-    image: carrier-webhook-sink:local
-    command: ["python", "-m", "webhook_simulator.sink", "--port", "9000"]
+    image: carrier-webhook-simulator:local # the simulator below reuses this very image
+    command: ["python", "-m", "webhook_simulator.receiver"]
     ports:
-      - "9000:9000"
+      - "${RECEIVER_HOST_PORT:-9000}:9000"
+    volumes:
+      - receiver-data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - RECEIVER_MAX_BODY_BYTES
+      - RECEIVER_ACCESS_LOG
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health', timeout=2)"]
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
+  # --- The 5 carriers, pushing events to the receiver (continuous by default) ---
   simulator:
-    build:
-      context: .
-      target: runtime
     image: carrier-webhook-simulator:local
     depends_on:
-      sink:
-        condition: service_healthy
+      receiver:
+        condition: service_healthy # don't start sending until the receiver can answer
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:host-gateway" # lets you aim at a backend running on your machine
+    # Optional ".env" file (see .env.example) AND variables from your shell are both passed in.
+    # Anything you don't set falls back to the defaults baked into the app / image.
+    env_file:
+      - path: .env
+        required: false
     environment:
-      SIM_TARGET_URL_TEMPLATE: ${SIM_TARGET_URL_TEMPLATE:-http://sink:9000/webhooks/{carrier}}
-      SIM_CARRIERS: ${SIM_CARRIERS:-alpha,beta,gamma,delta,epsilon}
-      SIM_RATE: ${SIM_RATE:-5}
-      SIM_SHIPMENTS_PER_BATCH: ${SIM_SHIPMENTS_PER_BATCH:-20}
-      SIM_MAX_EVENTS: ${SIM_MAX_EVENTS:-0}
-      SIM_DUPLICATE_RATE: ${SIM_DUPLICATE_RATE:-0.10}
-      SIM_OUT_OF_ORDER_RATE: ${SIM_OUT_OF_ORDER_RATE:-0.10}
-      SIM_DUPLICATE_MAX_DELAY: ${SIM_DUPLICATE_MAX_DELAY:-5}
-      SIM_SEED: ${SIM_SEED:-}
-      SIM_DRY_RUN: ${SIM_DRY_RUN:-false}
-      SIM_REQUEST_TIMEOUT: ${SIM_REQUEST_TIMEOUT:-5}
-    restart: "no"
+      - SIM_TARGET_URL_TEMPLATE
+      - SIM_CARRIERS
+      - SIM_RATE
+      - SIM_SHIPMENTS_PER_BATCH
+      - SIM_MAX_EVENTS
+      - SIM_DUPLICATE_RATE
+      - SIM_OUT_OF_ORDER_RATE
+      - SIM_DUPLICATE_MAX_DELAY
+      - SIM_SEED
+      - SIM_DRY_RUN
+      - SIM_REQUEST_TIMEOUT
+    restart: on-failure # exits with code 1 when nothing could be delivered, so it retries
 
+  # --- Lint + tests (only runs when asked: `docker compose run --rm tests`) ---
   tests:
     profiles: ["test"]
     build:
       context: .
       target: test
+
+volumes:
+  receiver-data:

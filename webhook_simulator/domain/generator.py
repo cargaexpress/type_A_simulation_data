@@ -1,49 +1,44 @@
-"""Generador de eventos aleatorios por transportadora (RIWI-83).
+"""Random event generator, one journey per shipment (RIWI-83).
 
-Cada envío (shipment) recorre un ciclo de vida realista: creado, recolectado,
-en tránsito, en reparto y entregado, con variantes (novedades, devolución, pérdida,
-cancelación). En cada paso se elige al azar uno de los estados propios de la
-transportadora que corresponda, así se obtienen estados variados.
+Each shipment follows a realistic life cycle (created, picked up, in transit, out for
+delivery, delivered) with variants (exceptions, return, loss, cancellation). At every step
+we randomly pick one of the carrier's OWN statuses that fits, so statuses vary a lot.
 """
 
 import random
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from webhook_simulator.catalog import CarrierProfile, CarrierStatus
+from webhook_simulator.domain.catalog import CanonicalStatus, CarrierProfile, CarrierStatus
+from webhook_simulator.domain.models import ShipmentEvent
 
 CITIES = (
     "Bogotá", "Medellín", "Cali", "Barranquilla", "Cartagena",
     "Bucaramanga", "Pereira", "Cúcuta", "Manizales", "Santa Marta",
 )  # fmt: skip
 
-# (peso, recorrido en estados canónicos). Los recorridos con EXCEPTION usan estados
-# de novedad de la transportadora; "cancelación" usa su estado marcado como cancel.
+CANCEL_STEP = "CANCEL"  # pseudo-step: "use whatever status this carrier has for cancelling"
+
+C = CanonicalStatus
+
+# (weight, journey as canonical steps). Journeys with EXCEPTION pick one of the carrier's
+# exception statuses; CANCEL picks its status flagged as `cancel`.
 LIFECYCLES: tuple[tuple[int, tuple[str, ...]], ...] = (
-    (55, ("CREATED", "PICKED_UP", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED")),
-    (15, ("CREATED", "PICKED_UP", "IN_TRANSIT", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED")),
-    (10, ("CREATED", "PICKED_UP", "IN_TRANSIT", "OUT_FOR_DELIVERY", "EXCEPTION", "OUT_FOR_DELIVERY", "DELIVERED")),
-    (6, ("CREATED", "PICKED_UP", "IN_TRANSIT", "EXCEPTION", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED")),
-    (6, ("CREATED", "PICKED_UP", "IN_TRANSIT", "OUT_FOR_DELIVERY", "EXCEPTION", "RETURNED")),
-    (4, ("CREATED", "PICKED_UP", "IN_TRANSIT", "LOST_OR_DAMAGED")),
-    (4, ("CREATED", "CANCEL")),
+    (55, (C.CREATED, C.PICKED_UP, C.IN_TRANSIT, C.OUT_FOR_DELIVERY, C.DELIVERED)),
+    (15, (C.CREATED, C.PICKED_UP, C.IN_TRANSIT, C.IN_TRANSIT, C.OUT_FOR_DELIVERY, C.DELIVERED)),
+    (10, (C.CREATED, C.PICKED_UP, C.IN_TRANSIT, C.OUT_FOR_DELIVERY, C.EXCEPTION,
+          C.OUT_FOR_DELIVERY, C.DELIVERED)),
+    (6, (C.CREATED, C.PICKED_UP, C.IN_TRANSIT, C.EXCEPTION, C.IN_TRANSIT,
+         C.OUT_FOR_DELIVERY, C.DELIVERED)),
+    (6, (C.CREATED, C.PICKED_UP, C.IN_TRANSIT, C.OUT_FOR_DELIVERY, C.EXCEPTION, C.RETURNED)),
+    (4, (C.CREATED, C.PICKED_UP, C.IN_TRANSIT, C.LOST_OR_DAMAGED)),
+    (4, (C.CREATED, CANCEL_STEP)),
 )  # fmt: skip
 
 
-@dataclass(frozen=True)
-class ShipmentEvent:
-    event_id: str
-    carrier: str  # slug de la transportadora
-    tracking_number: str
-    status: CarrierStatus
-    occurred_at: datetime  # UTC, en segundos exactos
-    location: str
-
-
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class EventGenerator:
@@ -51,13 +46,13 @@ class EventGenerator:
         self,
         profiles: Sequence[CarrierProfile],
         rng: random.Random,
-        clock: Callable[[], datetime] = _utcnow,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not profiles:
-            raise ValueError("Se necesita al menos una transportadora")
+            raise ValueError("At least one carrier is required")
         self._profiles = tuple(profiles)
         self._rng = rng
-        self._clock = clock
+        self._clock = clock or _utcnow  # injectable so tests get deterministic timestamps
         self._used_tracking: set[str] = set()
 
     def _tracking_number(self, profile: CarrierProfile) -> str:
@@ -68,17 +63,18 @@ class EventGenerator:
                 return number
 
     def _event_id(self) -> str:
+        # Built from the seeded rng (not uuid4()) so the same seed gives the same ids.
         return str(uuid.UUID(int=self._rng.getrandbits(128), version=4))
 
     @staticmethod
     def _candidates(profile: CarrierProfile, step: str) -> tuple[CarrierStatus, ...]:
-        """Estados de la transportadora que sirven para un paso del recorrido."""
-        if step == "CANCEL":
+        """Carrier statuses that can express one step of a journey."""
+        if step == CANCEL_STEP:
             return tuple(s for s in profile.statuses if s.cancel)
         return profile.statuses_for(step)
 
     def _pick_lifecycle(self, profile: CarrierProfile) -> tuple[str, ...]:
-        # Solo recorridos que esta transportadora puede expresar con sus estados.
+        # Only journeys this carrier can actually express with its own statuses.
         options = [
             (weight, path)
             for weight, path in LIFECYCLES
@@ -89,18 +85,18 @@ class EventGenerator:
         )[0]
 
     def new_shipment(self, profile: CarrierProfile | None = None) -> list[ShipmentEvent]:
-        """Eventos de un envío, en el orden en que realmente ocurrieron."""
+        """Events of one shipment, in the order they really happened."""
         profile = profile or self._rng.choice(self._profiles)
         path = self._pick_lifecycle(profile)
         tracking = self._tracking_number(profile)
 
-        gaps = [self._rng.randint(5, 240) for _ in path]  # minutos entre un paso y el siguiente
+        gaps = [self._rng.randint(5, 240) for _ in path]  # minutes between steps
         started = self._clock().replace(microsecond=0) - timedelta(
             minutes=sum(gaps) + self._rng.randint(0, 360)
         )
         events: list[ShipmentEvent] = []
         moment = started
-        for step, gap in zip(path, gaps):
+        for step, gap in zip(path, gaps, strict=True):
             moment += timedelta(minutes=gap)
             events.append(
                 ShipmentEvent(

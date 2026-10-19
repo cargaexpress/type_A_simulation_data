@@ -1,23 +1,35 @@
 [project]
 name = "carrier-webhook-simulator"
-version = "1.0.0"
-description = "Simulador de webhooks (push) de 5 transportadoras Tipo A - CargaExpress"
+version = "2.0.0"
+description = "Webhook simulator (push) for 5 Type A carriers + our own receiver API - CargaExpress"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "httpx>=0.27",
+    "defusedxml>=0.7.1",      # safe XML parsing for the Delta carrier payloads
+    "fastapi>=0.115",         # receiver API
+    "httpx>=0.27",            # async HTTP client used by the simulator
+    "pydantic-settings>=2.7", # env + CLI configuration
+    "uvicorn>=0.32",          # ASGI server for the receiver
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "ruff>=0.8",
 ]
 
 [tool.uv]
-# Servicio independiente: se ejecuta con "python -m webhook_simulator", no se instala como paquete.
+# Two standalone services run with "python -m ...", so there's nothing to install as a package.
 package = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "RUF"]

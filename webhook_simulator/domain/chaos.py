@@ -1,12 +1,12 @@
-"""Inyección configurable de eventos duplicados y fuera de orden (RIWI-85).
+"""Configurable duplicate and out-of-order events (RIWI-85).
 
-Parte del orden "perfecto" (cada envío llega en el orden en que ocurrió, mezclado con
-los demás envíos) y lo desordena según dos probabilidades independientes:
+We start from the "perfect" order (each shipment arrives in the order it happened, mixed
+with the other shipments) and then mess it up using two independent probabilities:
 
-- out_of_order_rate: probabilidad de que un evento llegue DESPUÉS de uno posterior del
-  mismo envío (por ejemplo, "Entregada" antes de "En reparto").
-- duplicate_rate: probabilidad de que un evento se reenvíe idéntico (mismo id y mismo
-  contenido), como hacen las transportadoras al reintentar un webhook.
+- out_of_order_rate: chance that an event arrives AFTER a later event of the same shipment
+  (e.g. "Delivered" shows up before "Out for delivery").
+- duplicate_rate: chance that an event is re-sent identically (same id, same bytes), which
+  is what carriers do when they retry a webhook.
 """
 
 import random
@@ -14,40 +14,42 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from webhook_simulator.generator import ShipmentEvent
+from webhook_simulator.domain.models import ShipmentEvent
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ChaosConfig:
     duplicate_rate: float = 0.0
     out_of_order_rate: float = 0.0
-    duplicate_max_delay: int = 5  # un duplicado llega, como máximo, tantos mensajes después
+    duplicate_max_delay: int = 5  # a duplicate arrives at most this many messages later
 
     def __post_init__(self) -> None:
         for name in ("duplicate_rate", "out_of_order_rate"):
             value = getattr(self, name)
             if not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} debe estar entre 0 y 1 (recibido: {value})")
+                raise ValueError(f"{name} must be between 0 and 1 (got {value})")
         if self.duplicate_max_delay < 0:
-            raise ValueError("duplicate_max_delay no puede ser negativo")
+            raise ValueError("duplicate_max_delay cannot be negative")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Delivery:
     event: ShipmentEvent
     duplicate: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlanStats:
-    total: int  # mensajes a enviar (incluye duplicados)
-    unique: int  # eventos distintos
-    duplicates: int  # reenvíos idénticos
-    out_of_order: int  # eventos que llegan después de uno posterior de su mismo envío
+    total: int  # messages to send (duplicates included)
+    unique: int  # distinct events
+    duplicates: int  # identical re-sends
+    out_of_order: int  # events arriving after a later event of the same shipment
 
 
-def _interleave(shipments: Sequence[Sequence[ShipmentEvent]], rng: random.Random) -> list[ShipmentEvent]:
-    """Mezcla los envíos entre sí sin alterar el orden interno de cada uno."""
+def _interleave(
+    shipments: Sequence[Sequence[ShipmentEvent]], rng: random.Random
+) -> list[ShipmentEvent]:
+    """Mix shipments together without touching the internal order of each one."""
     tokens = [index for index, events in enumerate(shipments) for _ in events]
     rng.shuffle(tokens)
     cursors = [iter(events) for events in shipments]
@@ -55,7 +57,7 @@ def _interleave(shipments: Sequence[Sequence[ShipmentEvent]], rng: random.Random
 
 
 def _make_out_of_order(sequence: list[ShipmentEvent], rate: float, rng: random.Random) -> None:
-    """Intercambia un evento con uno posterior de su mismo envío (modifica la lista)."""
+    """Swap an event with a later one from the same shipment (edits the list in place)."""
     touched: set[str] = set()
     for i in range(len(sequence)):
         event = sequence[i]
@@ -86,7 +88,7 @@ def _add_duplicates(
     for i, event in enumerate(sequence):
         plan.extend(scheduled.pop(i, []))
         plan.append(Delivery(event))
-    for position in sorted(scheduled):  # duplicados que caen después del último mensaje
+    for position in sorted(scheduled):  # duplicates that land after the last message
         plan.extend(scheduled[position])
     return plan
 
@@ -94,7 +96,7 @@ def _add_duplicates(
 def plan_deliveries(
     shipments: Sequence[Sequence[ShipmentEvent]], chaos: ChaosConfig, rng: random.Random
 ) -> list[Delivery]:
-    """Orden final de envío de un lote de envíos, con desorden y duplicados inyectados."""
+    """Final sending order for a batch of shipments, with disorder and duplicates injected."""
     sequence = _interleave(shipments, rng)
     _make_out_of_order(sequence, chaos.out_of_order_rate, rng)
     return _add_duplicates(sequence, chaos.duplicate_rate, chaos.duplicate_max_delay, rng)

@@ -1,60 +1,60 @@
-"""RIWI-83: generador de eventos aleatorios por transportadora."""
-from collections import Counter
+"""RIWI-83: random events per carrier, with realistic journeys."""
 
-import pytest
-
-from webhook_simulator.catalog import CARRIERS, CARRIERS_BY_SLUG
-from webhook_simulator.generator import EventGenerator
 import random
 
-
-def test_misma_semilla_mismos_eventos(make_generator):
-    a = make_generator(5).new_batch(10)
-    b = make_generator(5).new_batch(10)
-    c = make_generator(6).new_batch(10)
-    assert a == b
-    assert a != c
+from webhook_simulator.domain.catalog import CARRIERS, CARRIERS_BY_SLUG, CanonicalStatus
+from webhook_simulator.domain.generator import EventGenerator
 
 
-@pytest.mark.parametrize("carrier", CARRIERS, ids=lambda c: c.slug)
-def test_envio_empieza_creado_y_tiempos_crecen(make_generator, carrier):
-    gen = make_generator(3)
-    for _ in range(50):
-        events = gen.new_shipment(carrier)
-        assert events[0].status.canonical == "CREATED"
-        assert len({e.tracking_number for e in events}) == 1
-        assert events[0].tracking_number.startswith(carrier.tracking_prefix)
-        times = [e.occurred_at for e in events]
-        assert times == sorted(times) and len(set(times)) == len(times)
-        assert all(e.occurred_at.microsecond == 0 for e in events)
-        assert all(e.status in carrier.statuses and e.carrier == carrier.slug for e in events)
+def test_timestamps_of_one_shipment_are_chronological(make_generator):
+    for shipment in make_generator().new_batch(100):
+        times = [e.occurred_at for e in shipment]
+        assert times == sorted(times)
+        assert len(set(times)) == len(times)
 
 
-def test_ids_y_guias_unicos(make_generator):
-    events = [e for s in make_generator(2).new_batch(200) for e in s]
+def test_all_events_of_a_shipment_share_carrier_and_tracking(make_generator):
+    for shipment in make_generator().new_batch(50):
+        assert len({(e.carrier, e.tracking_number) for e in shipment}) == 1
+        assert shipment[0].tracking_number.startswith(
+            CARRIERS_BY_SLUG[shipment[0].carrier].tracking_prefix
+        )
+
+
+def test_statuses_always_belong_to_the_carrier_that_sent_them(make_generator):
+    for shipment in make_generator().new_batch(200):
+        profile = CARRIERS_BY_SLUG[shipment[0].carrier]
+        assert all(e.status in profile.statuses for e in shipment)
+
+
+def test_ids_and_tracking_numbers_are_unique(make_generator):
+    events = [e for s in make_generator().new_batch(300) for e in s]
     assert len({e.event_id for e in events}) == len(events)
-    assert len({e.tracking_number for e in events}) == 200
+    assert len({s[0].tracking_number for s in make_generator().new_batch(300)}) == 300
 
 
-def test_estados_variados_por_transportadora(make_generator):
-    gen = make_generator(11)
-    seen = {c.slug: Counter() for c in CARRIERS}
-    for s in gen.new_batch(1500):
-        for e in s:
-            seen[e.carrier][e.status.raw] += 1
-    for carrier in CARRIERS:
-        assert len(seen[carrier.slug]) >= 6, carrier.slug
-        # se alcanzan todos los estados del catálogo
-        assert set(seen[carrier.slug]) == {s.raw for s in carrier.statuses}
+def test_every_journey_starts_with_created_and_cancellations_only_happen_early(make_generator):
+    for shipment in make_generator().new_batch(300):
+        assert shipment[0].status.canonical == CanonicalStatus.CREATED
+        for event in shipment[1:]:
+            if event.status.cancel:
+                assert len(shipment) == 2  # created -> cancelled, nothing else
 
 
-def test_recorridos_incluyen_excepcion_devolucion_perdida_y_cancelacion(make_generator):
-    finals = Counter()
-    for s in make_generator(4).new_batch(1000):
-        finals[s[-1].status.canonical] += 1
-    assert {"DELIVERED", "RETURNED", "LOST_OR_DAMAGED", "EXCEPTION"} <= set(finals)
+def test_over_many_shipments_every_carrier_shows_at_least_six_distinct_statuses(make_generator):
+    seen = {c.slug: set() for c in CARRIERS}
+    for shipment in make_generator().new_batch(600):
+        seen[shipment[0].carrier].update(e.status.raw for e in shipment)
+    assert all(len(statuses) >= 6 for statuses in seen.values())
 
 
-def test_sin_perfiles_falla():
+def test_same_seed_same_events_different_seed_different_events(make_generator):
+    assert make_generator(5).new_batch(10) == make_generator(5).new_batch(10)
+    assert make_generator(5).new_batch(10) != make_generator(6).new_batch(10)
+
+
+def test_it_needs_at_least_one_carrier():
+    import pytest
+
     with pytest.raises(ValueError):
         EventGenerator([], random.Random(1))

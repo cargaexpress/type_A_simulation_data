@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 #
-# Dockerfile del SIMULADOR DE WEBHOOKS (RIWI-86). Es independiente del backend:
-# imagen propia, dependencias propias y ciclo de vida propio.
-# Toda la configuración llega por variables de entorno SIM_* (ver README.md).
+# One image, two services: the SAME image runs the receiver API or the simulator, depending on
+# the command docker-compose.yml gives it. Everything is configured with environment variables
+# (SIM_* for the simulator, RECEIVER_* for the receiver; see README.md).
 
-# ---------- Etapa 1: instalar dependencias ----------
+# ---------- Stage 1: install production dependencies ----------
 FROM python:3.12-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /usr/local/bin/uv
@@ -15,11 +15,12 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
+# Only the dependency files first: this layer stays cached until dependencies change.
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
-# ---------- Etapa de pruebas (incluye pytest) ----------
+# ---------- Test stage (adds pytest + ruff): `docker compose run --rm tests` ----------
 FROM python:3.12-slim AS test
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /usr/local/bin/uv
@@ -39,23 +40,30 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY webhook_simulator ./webhook_simulator
 COPY tests ./tests
 
-CMD ["pytest", "-q"]
+CMD ["sh", "-c", "ruff check . && pytest -q"]
 
-# ---------- Etapa final: imagen de ejecución (la que se publica) ----------
+# ---------- Final stage: the runtime image (this is the one you ship) ----------
 FROM python:3.12-slim AS runtime
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    RECEIVER_DB_PATH=/data/events.db \
+    SIM_TARGET_URL_TEMPLATE="http://receiver:9000/webhooks/{carrier}"
 
 WORKDIR /app
 
-RUN useradd --system --no-create-home --uid 10001 simulator
+# Never run as root. /data is where the receiver keeps its SQLite file; creating it here, owned
+# by our user, means a fresh docker volume mounted on it is writable from the first start.
+RUN useradd --system --no-create-home --uid 10001 app \
+    && mkdir /data \
+    && chown app:app /data
 
 COPY --from=builder /app/.venv /app/.venv
 COPY webhook_simulator ./webhook_simulator
 
-USER simulator
+USER app
 
-# Por defecto: envía a http://sink:9000/webhooks/{carrier} (ver docker-compose.yml)
+# Default = the simulator. The receiver service overrides this in docker-compose.yml.
+# (SIM_TARGET_URL_TEMPLATE above points at the compose service called "receiver".)
 CMD ["python", "-m", "webhook_simulator"]
