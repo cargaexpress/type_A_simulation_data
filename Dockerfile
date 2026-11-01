@@ -3,9 +3,10 @@
 # One image, two services: the SAME image runs the receiver API or the simulator, depending on
 # the command docker-compose.yml gives it. Everything is configured with environment variables
 # (SIM_* for the simulator, RECEIVER_* for the receiver; see README.md).
+# Optimized using Alpine Linux for ultra-compact image footprint.
 
 # ---------- Stage 1: install production dependencies ----------
-FROM python:3.12-slim AS builder
+FROM python:3.12-alpine AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /usr/local/bin/uv
 
@@ -21,7 +22,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
 # ---------- Test stage (adds pytest + ruff): `docker compose run --rm tests` ----------
-FROM python:3.12-slim AS test
+FROM python:3.12-alpine AS test
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /usr/local/bin/uv
 
@@ -43,7 +44,7 @@ COPY tests ./tests
 CMD ["sh", "-c", "ruff check . && pytest -q"]
 
 # ---------- Final stage: the runtime image (this is the one you ship) ----------
-FROM python:3.12-slim AS runtime
+FROM python:3.12-alpine AS runtime
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
@@ -55,7 +56,7 @@ WORKDIR /app
 
 # Never run as root. /data is where the receiver keeps its SQLite file; creating it here, owned
 # by our user, means a fresh docker volume mounted on it is writable from the first start.
-RUN useradd --system --no-create-home --uid 10001 app \
+RUN adduser -D -u 10001 -s /sbin/nologin app \
     && mkdir /data \
     && chown app:app /data
 
