@@ -52,10 +52,11 @@ def create_app(
     clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     settings = settings or ReceiverSettings()
-    version = db.migrate(settings.db_path)  # create/upgrade the schema before taking traffic
-    log.info("database ready: %s (schema v%d)", settings.db_path, version)
+    target_db = settings.target_database
+    version = db.migrate(target_db)  # create/upgrade the schema before taking traffic
+    log.info("database ready: %s (schema v%d)", target_db, version)
 
-    repository = EventRepository(settings.db_path)
+    repository = EventRepository(target_db, retention_days=settings.retention_days)
     service = IngestService(repository, clock=clock)
 
     app = FastAPI(
@@ -75,42 +76,53 @@ def create_app(
         if len(body) > settings.max_body_bytes:
             raise HTTPException(413, "payload too large")
 
-        content_type = request.headers.get("content-type", "")
+        content_type = request.headers.get("content-type", "application/octet-stream")
         try:
-            # SQLite calls are blocking, so they run in a worker thread to keep the loop free.
             result = await asyncio.to_thread(service.ingest, carrier, content_type, body)
-        except UnknownCarrier:
-            raise HTTPException(404, f"unknown carrier '{carrier}'") from None
+        except UnknownCarrier as exc:
+            raise HTTPException(404, str(exc)) from exc
         except InvalidPayload as exc:
-            raise HTTPException(422, str(exc)) from None
+            raise HTTPException(422, str(exc)) from exc
+
         return IngestResponse(
-            status=result.outcome, carrier=result.carrier, event_id=result.event_id
+            status=result.outcome,
+            carrier=result.carrier,
+            event_id=result.event_id,
         )
 
+    # ------------------------------------------------------------------------- maintenance
+    @app.post("/maintenance/cleanup", tags=["maintenance"])
+    def cleanup_old_events(days: int | None = None) -> dict[str, int]:
+        """Delete events older than N days (defaults to retention_days setting)."""
+        deleted = repository.cleanup_old_events(days)
+        return {"deleted_events": deleted}
+
     # ---------------------------------------------------------------------- observability
-    @app.get("/health", tags=["ops"])
-    async def health() -> dict[str, str]:
-        await asyncio.to_thread(repository.ping)  # proves the database is reachable too
+    @app.get("/health", tags=["system"])
+    def health() -> dict[str, str]:
+        repository.ping()
         return {"status": "ok"}
 
-    @app.get("/stats", response_model=StatsOut, tags=["ops"])
-    async def stats() -> dict[str, Any]:
-        return await asyncio.to_thread(repository.stats)
+    @app.get("/stats", response_model=StatsOut, tags=["system"])
+    def stats() -> dict[str, Any]:
+        return repository.stats()
 
-    @app.get("/events", response_model=list[EventOut], tags=["data"])
-    async def list_events(
+    # --------------------------------------------------------------------- data inspection
+    @app.get("/events", response_model=list[EventOut], tags=["events"])
+    def list_events(
         carrier: str | None = None,
         tracking_number: str | None = None,
         after_id: AfterId = 0,
-        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
+        limit: Annotated[int, Query(ge=1, le=500)] = 50,
     ) -> list[dict[str, Any]]:
-        return await asyncio.to_thread(
-            lambda: repository.list_events(
-                carrier=carrier, tracking_number=tracking_number, after_id=after_id, limit=limit
-            )
+        return repository.list_events(
+            carrier=carrier,
+            tracking_number=tracking_number,
+            after_id=after_id,
+            limit=limit,
         )
 
-    # ------------------------------------------------------------------------ extraction
+    # ----------------------------------------------------------------------------- exports
     @app.get("/exports/events.ndjson", tags=["export"])
     def export_ndjson(after_id: AfterId = 0, carrier: str | None = None) -> StreamingResponse:
         """Every event, one JSON object per line. Use `after_id` for incremental pulls."""

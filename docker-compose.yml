@@ -13,7 +13,7 @@
 name: webhook-simulator
 
 services:
-  # --- Our own API that receives the carriers' webhooks and stores them in SQLite ---
+  # --- Our own API that receives the carriers' webhooks and stores them (SQLite or PostgreSQL) ---
   receiver:
     build:
       context: .
@@ -28,6 +28,9 @@ services:
       - path: .env
         required: false
     environment:
+      - DATABASE_URL
+      - RECEIVER_DATABASE_URL
+      - RECEIVER_RETENTION_DAYS
       - RECEIVER_MAX_BODY_BYTES
       - RECEIVER_ACCESS_LOG
     healthcheck:
