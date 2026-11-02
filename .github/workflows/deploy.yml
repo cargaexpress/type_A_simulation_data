@@ -48,19 +48,56 @@ jobs:
           
           echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
 
-      - name: Render Task Definition with Image and Secrets
+      - name: Ensure ECS Task Execution Role Exists
+        id: ensure-role
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ROLE_NAME="ecsTaskExecutionRole"
+          ROLE_ARN="arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME"
+
+          echo "Checking for IAM role: $ROLE_NAME"
+          if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+            echo "Role $ROLE_NAME not found. Creating it..."
+            aws iam create-role \
+              --role-name "$ROLE_NAME" \
+              --assume-role-policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Principal": {
+                      "Service": "ecs-tasks.amazonaws.com"
+                    },
+                    "Action": "sts:AssumeRole"
+                  }
+                ]
+              }' || true
+
+            aws iam attach-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-arn "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy" || true
+          else
+            echo "Role $ROLE_NAME exists."
+          fi
+
+          echo "execution_role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
+
+      - name: Render Task Definition with Image, Role, and Secrets
         id: render-task-def
         env:
           IMAGE_URI: ${{ steps.build-image.outputs.image }}
+          ROLE_ARN: ${{ steps.ensure-role.outputs.execution_role_arn }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           RETENTION_DAYS: ${{ secrets.RECEIVER_RETENTION_DAYS || '3' }}
         run: |
-          # Inject image and secrets into task-definition.json using jq
+          # Inject image, executionRoleArn, and secrets into task-definition.json
           jq \
             --arg img "$IMAGE_URI" \
+            --arg role "$ROLE_ARN" \
             --arg db "$DATABASE_URL" \
             --arg ret "$RETENTION_DAYS" \
             '
+            .executionRoleArn = $role |
             .containerDefinitions[0].image = $img |
             (.containerDefinitions[0].environment[] | select(.name == "DATABASE_URL")).value = $db |
             (.containerDefinitions[0].environment[] | select(.name == "RECEIVER_RETENTION_DAYS")).value = $ret
