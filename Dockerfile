@@ -65,6 +65,8 @@ COPY webhook_simulator ./webhook_simulator
 
 USER app
 
-# Default = the simulator. The receiver service overrides this in docker-compose.yml.
-# (SIM_TARGET_URL_TEMPLATE above points at the compose service called "receiver".)
-CMD ["python", "-m", "webhook_simulator"]
+EXPOSE 9000
+
+# Default = the receiver API listening on port 9000.
+# The simulator can be run by specifying: ["python", "-m", "webhook_simulator"]
+CMD ["python", "-m", "webhook_simulator.receiver"]

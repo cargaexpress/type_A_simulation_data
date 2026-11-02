@@ -43,6 +43,7 @@ services:
   # --- The 5 carriers, pushing events to the receiver (continuous by default) ---
   simulator:
     image: carrier-webhook-simulator:local
+    command: ["python", "-m", "webhook_simulator"]
     depends_on:
       receiver:
         condition: service_healthy # don't start sending until the receiver can answer

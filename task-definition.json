@@ -1,0 +1,41 @@
+{
+  "family": "carrier-webhook-simulator-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "containerDefinitions": [
+    {
+      "name": "carrier-webhook-simulator",
+      "image": "carrier-webhook-simulator:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 9000,
+          "hostPort": 9000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "RECEIVER_HOST",
+          "value": "0.0.0.0"
+        },
+        {
+          "name": "RECEIVER_PORT",
+          "value": "9000"
+        },
+        {
+          "name": "RECEIVER_RETENTION_DAYS",
+          "value": "3"
+        },
+        {
+          "name": "DATABASE_URL",
+          "value": ""
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+name: Build and Deploy to AWS ECR and ECS Fargate
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to AWS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Docker Image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          IMAGE_LATEST="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          
+          echo "Building Docker image: $IMAGE_URI"
+          docker build --target runtime -t "$IMAGE_URI" -t "$IMAGE_LATEST" .
+          
+          echo "Pushing image to ECR..."
+          docker push "$IMAGE_URI"
+          docker push "$IMAGE_LATEST"
+          
+          echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+      - name: Render Task Definition with Image and Secrets
+        id: render-task-def
+        env:
+          IMAGE_URI: ${{ steps.build-image.outputs.image }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RETENTION_DAYS: ${{ secrets.RECEIVER_RETENTION_DAYS || '3' }}
+        run: |
+          # Inject image and secrets into task-definition.json using jq
+          jq \
+            --arg img "$IMAGE_URI" \
+            --arg db "$DATABASE_URL" \
+            --arg ret "$RETENTION_DAYS" \
+            '
+            .containerDefinitions[0].image = $img |
+            (.containerDefinitions[0].environment[] | select(.name == "DATABASE_URL")).value = $db |
+            (.containerDefinitions[0].environment[] | select(.name == "RECEIVER_RETENTION_DAYS")).value = $ret
+            ' task-definition.json > task-definition-rendered.json
+
+      - name: Register Task Definition in AWS ECS
+        id: register-task-def
+        run: |
+          REGISTERED_TASK=$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition-rendered.json)
+          
+          TASK_DEF_ARN=$(echo "$REGISTERED_TASK" | jq -r '.taskDefinition.taskDefinitionArn')
+          echo "Registered new Task Definition ARN: $TASK_DEF_ARN"
+          echo "task_def_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+
+      - name: Update ECS Service (If Service Exists)
+        env:
+          CLUSTER_NAME: ${{ secrets.ECS_CLUSTER }}
+          SERVICE_NAME: carrier-webhook-simulator-service
+          TASK_DEF_ARN: ${{ steps.register-task-def.outputs.task_def_arn }}
+        run: |
+          SERVICE_EXISTS=$(aws ecs describe-services \
+            --cluster "$CLUSTER_NAME" \
+            --services "$SERVICE_NAME" \
+            --query "services[?status=='ACTIVE'].serviceName" \
+            --output text)
+
+          if [ -n "$SERVICE_EXISTS" ]; then
+            echo "Service $SERVICE_NAME exists in cluster $CLUSTER_NAME. Updating with new task definition..."
+            aws ecs update-service \
+              --cluster "$CLUSTER_NAME" \
+              --service "$SERVICE_NAME" \
+              --task-definition "$TASK_DEF_ARN" \
+              --force-new-deployment
+            echo "Service updated successfully!"
+          else
+            echo "Notice: Service $SERVICE_NAME does not exist yet in cluster $CLUSTER_NAME."
+            echo "You can create it once in the AWS Console using Task Definition: $TASK_DEF_ARN"
+          fi
