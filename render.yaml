@@ -9,5 +9,9 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
+      - key: AUTO_SIMULATE
+        value: "true"
+      - key: SIM_RATE
+        value: "0.5"
       - key: RECEIVER_RETENTION_DAYS
         value: "3"

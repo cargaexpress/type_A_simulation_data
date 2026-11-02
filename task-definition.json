@@ -32,6 +32,14 @@
           "value": "3"
         },
         {
+          "name": "AUTO_SIMULATE",
+          "value": "true"
+        },
+        {
+          "name": "SIM_RATE",
+          "value": "0.5"
+        },
+        {
           "name": "DATABASE_URL",
           "value": ""
         }

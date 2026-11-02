@@ -23,6 +23,17 @@ class ReceiverSettings(BaseSettings):
     retention_days: int = Field(
         3, ge=0, description="Auto-delete events older than N days to save space (0 = keep forever)"
     )
+    auto_simulate: bool = Field(
+        False,
+        validation_alias=AliasChoices("RECEIVER_AUTO_SIMULATE", "AUTO_SIMULATE"),
+        description="Run event simulator automatically and continuously in the background",
+    )
+    sim_rate: float = Field(
+        0.5,
+        validation_alias=AliasChoices("RECEIVER_SIM_RATE", "SIM_RATE"),
+        ge=0.01,
+        description="Events per second when auto_simulate is True (default: 1 event every 2s)",
+    )
     max_body_bytes: int = Field(1_000_000, ge=1, description="Webhook bodies above this get a 413")
     access_log: bool = Field(False, description="One log line per request (noisy at 5 msg/s)")
 
