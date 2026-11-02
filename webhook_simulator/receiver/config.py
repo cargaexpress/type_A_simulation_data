@@ -8,7 +8,12 @@ class ReceiverSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="RECEIVER_", env_ignore_empty=True, frozen=True)
 
     host: str = "0.0.0.0"
-    port: int = Field(9000, ge=1, le=65535)
+    port: int = Field(
+        9000,
+        validation_alias=AliasChoices("RECEIVER_PORT", "PORT"),
+        ge=1,
+        le=65535,
+    )
     db_path: str = Field("data/events.db", description="SQLite file; used if database_url is unset")
     database_url: str | None = Field(
         None,

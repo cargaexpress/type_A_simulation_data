@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: cargaexpress-simulator-a
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: RECEIVER_RETENTION_DAYS
+        value: "3"
