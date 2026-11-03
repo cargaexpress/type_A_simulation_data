@@ -184,3 +184,14 @@ docker run --rm cargaexpress-simulator-a:latest which uv
 | **Compressed Transfer Size** | ~110 MB | 49.5 MB | **24.6 MB** | **-85.4 MB (-77.6%)** |
 | **Build Tools & Wheels** | Present (uv, dev wheels) | Removed | **Removed** (only runtime virtualenv) | 100% eliminated |
 | **Execution User** | root | app (UID 10001) | **app (UID 10001)** | Hardened |
+
+
+---
+
+## Integration in CargaExpress Multi-Carrier Ecosystem
+
+The CargaExpress platform integrates 3 distinct carrier communication patterns:
+
+1. **Type A (This Project - Push Webhooks / F3)**: 5 simulated carriers actively push event notifications over HTTP POST to the ingestion receiver as soon as status changes occur. Includes chaos engine for out-of-order and duplicate events.
+2. **Type B (Polling REST APIs / F4)**: 4 independent carrier microservices (Carriers A, B, C, D) backed by PostgreSQL, MySQL, MongoDB, and SQLite, exposed via Nginx HTTPS Gateway at https://cargaexpress-simulator-b.mooo.com.
+3. **Type C (Batch Object Storage / F5)**: 3 batch carriers depositing CSV and Excel XLSX files every 4 hours into MinIO S3 Object Storage with automated 3-day retention purging, also accessible via HTTPS at https://cargaexpress-simulator-b.mooo.com/carrier-{1,2,3}/.
